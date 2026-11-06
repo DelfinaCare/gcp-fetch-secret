@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "gcp-fetch-secret"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "axum",
  "base64 0.23.1",
