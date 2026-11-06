@@ -1,0 +1,7 @@
+target/
+.git/
+.github/
+tests/
+ci/
+README.md
+LICENSE
