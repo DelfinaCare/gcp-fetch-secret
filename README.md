@@ -1,4 +1,4 @@
-# secretsfetch
+# gcp-fetch-secret
 
 Fetches secrets from [GCP Secret Manager](https://cloud.google.com/secret-manager)
 into env files and secret files for bootstrapping programs on non-Cloud Run
@@ -19,7 +19,7 @@ secret versions are added.
 ## Usage
 
 ```
-secretsfetch [OPTIONS] <INPUT_FILE> <OUTPUT_FILE> <OUTPUT_DIR>
+gcp-fetch-secret [OPTIONS] <INPUT_FILE> <OUTPUT_FILE> <OUTPUT_DIR>
 ```
 
 | Argument / flag       | Description                                                                        |
@@ -31,7 +31,7 @@ secretsfetch [OPTIONS] <INPUT_FILE> <OUTPUT_FILE> <OUTPUT_DIR>
 | `-o`, `--oneshot`     | Write the files once and exit                                                      |
 | `--file-mode <MODE>`  | Octal permission bits for written files (default `444`)                            |
 | `--write-mode <MODE>` | `in-place` (default) or `replace`; see [Updating files](#updating-files)          |
-| `--endpoint <URL>`    | Secret Manager endpoint override, e.g. a regional endpoint. Also `SECRETSFETCH_ENDPOINT` |
+| `--endpoint <URL>`    | Secret Manager endpoint override, e.g. a regional endpoint. Also `GCP_FETCH_SECRET_ENDPOINT` |
 
 Authentication uses [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials):
 the GCE metadata server, `GOOGLE_APPLICATION_CREDENTIALS`, or gcloud user
@@ -45,7 +45,7 @@ secret, plus `roles/secretmanager.viewer` (or the
 docker run --rm \
   -v $PWD/in.yaml:/in.yaml:ro \
   -v $PWD/secrets:/secrets \
-  ghcr.io/delfinacare/secretsfetch:latest /in.yaml /secrets/app.env /secrets/files
+  ghcr.io/delfinacare/gcp-fetch-secret:latest /in.yaml /secrets/app.env /secrets/files
 ```
 
 ### Exit codes
@@ -104,7 +104,7 @@ put such secrets in their own file instead.
 
 ### Watching for changes
 
-Every `--sleep` seconds, secretsfetch asks Secret Manager which version each
+Every `--sleep` seconds, gcp-fetch-secret asks Secret Manager which version each
 `secret_id` resolves to (metadata only, no payload). If any changed, all
 secrets are fetched again and the files are rewritten. Files whose content
 didn't change are left alone. A secret referenced by several entries is
@@ -122,7 +122,7 @@ How an existing file is updated depends on `--write-mode`:
   (`-v /host/secrets/app.env:/app.env`) see the new content. A process
   reading at the exact moment of the update can see a truncated file. The
   file is made owner-writable only for the duration of the write, and must
-  be a regular file owned by the user secretsfetch runs as (or it must run
+  be a regular file owned by the user gcp-fetch-secret runs as (or it must run
   as root); symlinks are refused.
 - **`replace`**: a new file is renamed over the old one, so readers only ever
   see the complete old or new file. A single-file bind mount keeps showing
@@ -145,8 +145,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 
 # Container build + integration test against a fake Secret Manager
-docker build -t secretsfetch:test .
-ci/container_test.sh secretsfetch:test
+docker build -t gcp-fetch-secret:test .
+ci/container_test.sh gcp-fetch-secret:test
 ```
 
 `cargo test` includes end-to-end tests (`tests/cli.rs`) that run the binary
@@ -164,9 +164,9 @@ GitHub Actions workflows live in `.github/workflows/`:
 - **`release.yml`** (on publishing a GitHub release): checks the tag matches
   the `Cargo.toml` version, builds the image on native amd64/arm64 runners,
   merges them into one multi-arch image at
-  `ghcr.io/delfinacare/secretsfetch` tagged `X.Y.Z`, `X.Y` and `X`, attaches
+  `ghcr.io/delfinacare/gcp-fetch-secret` tagged `X.Y.Z`, `X.Y` and `X`, attaches
   build provenance attestations and an SBOM, and uploads static
-  `secretsfetch-linux-{amd64,arm64}` binaries to the release.
+  `gcp-fetch-secret-linux-{amd64,arm64}` binaries to the release.
 
 Dependabot (`.github/dependabot.yml`) updates crates, actions and the base
 image weekly, with the Google Cloud crates grouped into one PR.
@@ -180,8 +180,8 @@ image weekly, with the Google Cloud crates grouped into one PR.
 Verify a downloaded artifact with:
 
 ```bash
-gh attestation verify oci://ghcr.io/delfinacare/secretsfetch:X.Y.Z --owner DelfinaCare
-gh attestation verify secretsfetch-linux-amd64 --owner DelfinaCare
+gh attestation verify oci://ghcr.io/delfinacare/gcp-fetch-secret:X.Y.Z --owner DelfinaCare
+gh attestation verify gcp-fetch-secret-linux-amd64 --owner DelfinaCare
 ```
 
 ## License

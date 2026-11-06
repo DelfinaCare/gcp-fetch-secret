@@ -7,13 +7,13 @@ use std::time::Duration;
 use clap::Parser;
 use serde_json::json;
 
-use secretsfetch::output::{WriteMode, WriteOptions};
-use secretsfetch::{config, log, source, sync::Syncer};
+use gcp_fetch_secret::output::{WriteMode, WriteOptions};
+use gcp_fetch_secret::{config, log, source, sync::Syncer};
 
 /// Fetch secrets from GCP Secret Manager into env files and secret files,
 /// then keep them up to date as new secret versions are added.
 #[derive(Debug, Parser)]
-#[command(name = "secretsfetch", version)]
+#[command(name = "gcp-fetch-secret", version)]
 struct Args {
     /// YAML file listing the secrets to fetch.
     input_file: PathBuf,
@@ -45,7 +45,7 @@ struct Args {
     /// Override the Secret Manager endpoint, e.g. a regional endpoint like
     /// https://secretmanager.us-east1.rep.googleapis.com. An http:// endpoint
     /// (local emulator) is used without credentials.
-    #[arg(long, env = "SECRETSFETCH_ENDPOINT")]
+    #[arg(long, env = "GCP_FETCH_SECRET_ENDPOINT")]
     endpoint: Option<String>,
 }
 
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn positional_args_and_flags_match_python_version() {
         let a = Args::try_parse_from([
-            "secretsfetch",
+            "gcp-fetch-secret",
             "in.yaml",
             "out.env",
             "out.d",

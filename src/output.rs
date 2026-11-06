@@ -124,7 +124,7 @@ pub fn write_file(path: &Path, contents: &[u8], opts: WriteOptions) -> Result<bo
 
 fn replace(path: &Path, dir: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
     let mut tmp = tempfile::Builder::new()
-        .prefix(".secretsfetch-")
+        .prefix(".gcp-fetch-secret-")
         .tempfile_in(dir)?;
     tmp.write_all(contents)?;
     tmp.as_file()

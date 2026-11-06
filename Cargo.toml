@@ -1,5 +1,5 @@
 [package]
-name = "secretsfetch"
+name = "gcp-fetch-secret"
 version = "0.1.0"
 edition = "2024"
 description = "Fetches secrets from GCP Secret Manager into env files and secret files, and keeps them up to date"

@@ -73,10 +73,10 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: false
           load: true
-          tags: secretsfetch:test
+          tags: gcp-fetch-secret:test
           # Same cache scope as the release workflow, so releases reuse
           # layers built on main.
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
       - name: Container integration test
-        run: ci/container_test.sh secretsfetch:test
+        run: ci/container_test.sh gcp-fetch-secret:test

@@ -183,10 +183,10 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            asset_name: secretsfetch-linux-amd64
+            asset_name: gcp-fetch-secret-linux-amd64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            asset_name: secretsfetch-linux-arm64
+            asset_name: gcp-fetch-secret-linux-arm64
     steps:
       - uses: actions/checkout@v7
 
@@ -202,7 +202,7 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/secretsfetch ${{ matrix.asset_name }}
+        run: cp target/${{ matrix.target }}/release/gcp-fetch-secret ${{ matrix.asset_name }}
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4

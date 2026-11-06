@@ -7,13 +7,13 @@ IMAGE=$1
 PORT=18080
 WORK=$(mktemp -d)
 cleanup() {
-  docker rm -f secretsfetch-test >/dev/null 2>&1 || true
+  docker rm -f gcp-fetch-secret-test >/dev/null 2>&1 || true
   kill "$FAKE_PID" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
 
-fail() { echo "FAIL: $*"; docker logs secretsfetch-test 2>&1 || true; exit 1; }
+fail() { echo "FAIL: $*"; docker logs gcp-fetch-secret-test 2>&1 || true; exit 1; }
 
 cat > "$WORK/secrets.json" <<'JSON'
 {"projects/p/secrets/db": {"version": 1, "data": "hunter2\n"},
@@ -59,7 +59,7 @@ run --oneshot || fail "oneshot run"
 [ "$(stat -c %a "$WORK/out/secrets.env")" = "444" ] || fail "mode"
 
 # Watch mode picks up a rotated secret.
-docker run -d --name secretsfetch-test --network host -v "$WORK:/work" --user "$AS_USER" \
+docker run -d --name gcp-fetch-secret-test --network host -v "$WORK:/work" --user "$AS_USER" \
   "$IMAGE" /work/in.yaml /work/out/secrets.env /work/out/files \
   --endpoint "http://127.0.0.1:$PORT" --sleep 1 >/dev/null
 INODE=$(stat -c %i "$WORK/out/secrets.env")
@@ -75,7 +75,7 @@ done
 [ "$(stat -c %a "$WORK/out/secrets.env")" = "444" ] || fail "mode after update"
 
 # SIGTERM exits cleanly.
-docker stop secretsfetch-test >/dev/null
-[ "$(docker inspect -f '{{.State.ExitCode}}' secretsfetch-test)" = "0" ] || fail "exit code after SIGTERM"
+docker stop gcp-fetch-secret-test >/dev/null
+[ "$(docker inspect -f '{{.State.ExitCode}}' gcp-fetch-secret-test)" = "0" ] || fail "exit code after SIGTERM"
 
 echo "All container tests passed"

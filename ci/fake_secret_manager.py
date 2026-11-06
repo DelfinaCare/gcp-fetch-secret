@@ -2,7 +2,7 @@
 
 Serves GET /v1/projects/P/secrets/S/versions/V[:access]. Secrets and their
 versions come from a JSON file (re-read on every request, so the test can
-rotate a secret while secretsfetch is running):
+rotate a secret while gcp-fetch-secret is running):
 
     {"projects/p/secrets/db": {"version": 1, "data": "hunter2"}}
 """

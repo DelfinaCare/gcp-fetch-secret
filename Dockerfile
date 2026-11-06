@@ -26,9 +26,9 @@ RUN rm -rf src
 # Build the actual application
 COPY src ./src
 RUN touch src/main.rs src/lib.rs && cargo build --release --locked --target $(cat /rust-target) && \
-    cp target/$(cat /rust-target)/release/secretsfetch /secretsfetch-bin
+    cp target/$(cat /rust-target)/release/gcp-fetch-secret /gcp-fetch-secret-bin
 
 FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=builder /secretsfetch-bin /secretsfetch
-ENTRYPOINT ["/secretsfetch"]
+COPY --from=builder /gcp-fetch-secret-bin /gcp-fetch-secret
+ENTRYPOINT ["/gcp-fetch-secret"]

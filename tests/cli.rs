@@ -72,7 +72,7 @@ const CONFIG: &str = "secrets:
 ";
 
 fn spawn(dir: &Path, endpoint: &str, extra: &[&str]) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_secretsfetch"))
+    Command::new(env!("CARGO_BIN_EXE_gcp-fetch-secret"))
         .arg(dir.join("in.yaml"))
         .arg(dir.join("out.env"))
         .arg(dir.join("out.d"))
@@ -88,7 +88,7 @@ fn spawn(dir: &Path, endpoint: &str, extra: &[&str]) -> Child {
 async fn finish(child: Child) -> (ExitStatus, String) {
     let out = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output())
         .await
-        .expect("secretsfetch did not exit")
+        .expect("gcp-fetch-secret did not exit")
         .unwrap();
     let log = format!(
         "{}{}",
