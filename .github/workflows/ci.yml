@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs on the same PR / branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -27,14 +32,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: rustup component add clippy
-      - run: cargo clippy --all-targets -- -D warnings
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets -- -D warnings
 
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: cargo test
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run actionlint
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
 
   docker:
     name: Docker Build (${{ matrix.platform }})
@@ -59,5 +74,9 @@ jobs:
           push: false
           load: true
           tags: secretsfetch:test
+          # Same cache scope as the release workflow, so releases reuse
+          # layers built on main.
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
       - name: Container integration test
         run: ci/container_test.sh secretsfetch:test

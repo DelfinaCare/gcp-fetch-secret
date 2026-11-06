@@ -7,6 +7,7 @@ use futures_util::future::join_all;
 use serde_json::json;
 
 use crate::config::Plan;
+use crate::output::WriteOptions;
 use crate::source::SecretSource;
 use crate::{Error, log, output};
 
@@ -19,18 +20,18 @@ pub enum CheckOutcome {
 pub struct Syncer<S> {
     source: S,
     plan: Plan,
-    file_mode: u32,
+    write_opts: WriteOptions,
     /// secret id -> version last written to disk. Only updated after every
     /// file was written successfully, so a failed sync is retried.
     versions: HashMap<String, String>,
 }
 
 impl<S: SecretSource> Syncer<S> {
-    pub fn new(source: S, plan: Plan, file_mode: u32) -> Self {
+    pub fn new(source: S, plan: Plan, write_opts: WriteOptions) -> Self {
         Self {
             source,
             plan,
-            file_mode,
+            write_opts,
             versions: HashMap::new(),
         }
     }
@@ -71,7 +72,7 @@ impl<S: SecretSource> Syncer<S> {
 
         let mut written = Vec::new();
         for (file, contents) in rendered {
-            if output::write_atomic(&file.path, &contents, self.file_mode)? {
+            if output::write_file(&file.path, &contents, self.write_opts)? {
                 written.push(file.path.display().to_string());
             }
         }
@@ -235,7 +236,7 @@ mod tests {
         let fake = Fake::default();
         fake.set(A, "1", "alpha");
         fake.set(B, "4", "beta\n");
-        let mut s = Syncer::new(&fake, env.plan.clone(), 0o444);
+        let mut s = Syncer::new(&fake, env.plan.clone(), WriteOptions::default());
         s.sync().await.unwrap();
 
         assert_eq!(env.read("out.env"), "A=alpha\nB=beta\n");
@@ -251,7 +252,7 @@ mod tests {
         let env = Env::new();
         let fake = Fake::default();
         fake.set(A, "1", "alpha"); // B missing
-        let mut s = Syncer::new(&fake, env.plan.clone(), 0o444);
+        let mut s = Syncer::new(&fake, env.plan.clone(), WriteOptions::default());
         let err = s.sync().await.unwrap_err();
         assert!(err.to_string().contains(B), "{err}");
         assert!(!env.exists("out.env"));
@@ -264,7 +265,7 @@ mod tests {
         let fake = Fake::default();
         fake.set(A, "1", "alpha");
         fake.set(B, "1", "multi\nline");
-        let mut s = Syncer::new(&fake, env.plan.clone(), 0o444);
+        let mut s = Syncer::new(&fake, env.plan.clone(), WriteOptions::default());
         assert!(matches!(
             s.sync().await.unwrap_err(),
             Error::InvalidEnvValue { .. }
@@ -278,7 +279,7 @@ mod tests {
         let fake = Fake::default();
         fake.set(A, "1", "alpha");
         fake.set(B, "1", "beta");
-        let mut s = Syncer::new(&fake, env.plan.clone(), 0o444);
+        let mut s = Syncer::new(&fake, env.plan.clone(), WriteOptions::default());
         s.sync().await.unwrap();
         assert_eq!(s.check().await.unwrap(), CheckOutcome::Unchanged);
         assert_eq!(fake.access_calls.load(Ordering::SeqCst), 2);
@@ -290,7 +291,7 @@ mod tests {
         let fake = Fake::default();
         fake.set(A, "1", "alpha");
         fake.set(B, "1", "beta");
-        let mut s = Syncer::new(&fake, env.plan.clone(), 0o444);
+        let mut s = Syncer::new(&fake, env.plan.clone(), WriteOptions::default());
         s.sync().await.unwrap();
 
         fake.set(B, "2", "beta2");
@@ -307,7 +308,7 @@ mod tests {
         let fake = Fake::default();
         fake.set(A, "1", "alpha");
         fake.set(B, "1", "beta");
-        let mut s = Syncer::new(&fake, env.plan.clone(), 0o444);
+        let mut s = Syncer::new(&fake, env.plan.clone(), WriteOptions::default());
         s.sync().await.unwrap();
 
         *fake.fail_version.lock().unwrap() = true;
@@ -326,7 +327,7 @@ mod tests {
         let fake = Fake::default();
         fake.set(A, "1", "alpha");
         fake.set(B, "1", "beta");
-        let mut s = Syncer::new(&fake, env.plan.clone(), 0o444);
+        let mut s = Syncer::new(&fake, env.plan.clone(), WriteOptions::default());
         s.sync().await.unwrap();
 
         fake.set(A, "2", "alpha2");
@@ -346,7 +347,7 @@ mod tests {
         let fake = Fake::default();
         fake.set(A, "1", "alpha");
         fake.set(B, "1", "beta");
-        Syncer::new(&fake, env.plan.clone(), 0o444)
+        Syncer::new(&fake, env.plan.clone(), WriteOptions::default())
             .run(Duration::from_secs(3600), true)
             .await
             .unwrap();
@@ -358,7 +359,7 @@ mod tests {
         let env = Env::new();
         let fake = Fake::default();
         assert!(
-            Syncer::new(&fake, env.plan.clone(), 0o444)
+            Syncer::new(&fake, env.plan.clone(), WriteOptions::default())
                 .run(Duration::from_secs(1), false)
                 .await
                 .is_err()
@@ -374,7 +375,7 @@ mod tests {
         let fake: &'static Fake = Box::leak(Box::new(fake));
         let plan = env.plan.clone();
         let task = tokio::spawn(async move {
-            Syncer::new(fake, plan, 0o444)
+            Syncer::new(fake, plan, WriteOptions::default())
                 .run(Duration::from_secs(60), false)
                 .await
         });

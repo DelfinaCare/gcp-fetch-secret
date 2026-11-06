@@ -2014,6 +2014,7 @@ dependencies = [
  "futures-util",
  "google-cloud-auth",
  "google-cloud-secretmanager-v1",
+ "libc",
  "serde",
  "serde-saphyr",
  "serde_json",

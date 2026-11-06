@@ -4,6 +4,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # The Google Cloud crates are released together and depend on each
+      # other's exact versions, so update them in one PR.
+      google-cloud:
+        patterns:
+          - "google-cloud-*"
 
   - package-ecosystem: "github-actions"
     directory: "/"

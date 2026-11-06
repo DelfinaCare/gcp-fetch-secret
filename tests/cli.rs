@@ -3,7 +3,7 @@
 //! error statuses).
 
 use std::collections::HashMap;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
@@ -183,8 +183,12 @@ async fn watch_mode_updates_files_and_exits_cleanly_on_sigterm() {
     };
 
     wait_for("DB_PASSWORD=hunter2\nAPI_KEY=abc123\n").await;
+    let inode = std::fs::metadata(&env_file).unwrap().ino();
     set(&secrets, "projects/p/secrets/api", 2, b"rotated");
     wait_for("DB_PASSWORD=hunter2\nAPI_KEY=rotated\n").await;
+    // Updated in place by default, so a bind mount of the file sees it.
+    assert_eq!(std::fs::metadata(&env_file).unwrap().ino(), inode);
+    assert_eq!(mode(&env_file), 0o444);
 
     let pid = child.id().unwrap().to_string();
     let killed = std::process::Command::new("kill")

@@ -19,7 +19,12 @@ cat > "$WORK/secrets.json" <<'JSON'
 {"projects/p/secrets/db": {"version": 1, "data": "hunter2\n"},
  "projects/p/secrets/key": {"version": 4, "data": "-----BEGIN KEY-----\n"}}
 JSON
+# Run as an unprivileged user so permission handling is really exercised
+# (root ignores the read-only bit on the files being rewritten).
 mkdir -p "$WORK/out"
+chmod 755 "$WORK"
+chmod 777 "$WORK/out"
+AS_USER=65534:65534
 cat > "$WORK/in.yaml" <<'YAML'
 secrets:
   - env_name: DB_PASSWORD
@@ -33,7 +38,7 @@ FAKE_PID=$!
 sleep 1
 
 run() {
-  docker run --rm --network host -v "$WORK:/work" --user "$(id -u):$(id -g)" \
+  docker run --rm --network host -v "$WORK:/work" --user "$AS_USER" \
     "$IMAGE" /work/in.yaml /work/out/secrets.env /work/out/files \
     --endpoint "http://127.0.0.1:$PORT" "$@"
 }
@@ -54,15 +59,20 @@ run --oneshot || fail "oneshot run"
 [ "$(stat -c %a "$WORK/out/secrets.env")" = "444" ] || fail "mode"
 
 # Watch mode picks up a rotated secret.
-docker run -d --name secretsfetch-test --network host -v "$WORK:/work" --user "$(id -u):$(id -g)" \
+docker run -d --name secretsfetch-test --network host -v "$WORK:/work" --user "$AS_USER" \
   "$IMAGE" /work/in.yaml /work/out/secrets.env /work/out/files \
   --endpoint "http://127.0.0.1:$PORT" --sleep 1 >/dev/null
+INODE=$(stat -c %i "$WORK/out/secrets.env")
 sed -i 's/"version": 1, "data": "hunter2\\n"/"version": 2, "data": "rotated"/' "$WORK/secrets.json"
 for i in $(seq 1 20); do
   [ "$(cat "$WORK/out/secrets.env")" = "DB_PASSWORD=rotated" ] && break
   [ "$i" -eq 20 ] && fail "rotation not picked up"
   sleep 0.5
 done
+
+# Updated in place (same inode), so single-file bind mounts see the change.
+[ "$(stat -c %i "$WORK/out/secrets.env")" = "$INODE" ] || fail "file was replaced, not updated in place"
+[ "$(stat -c %a "$WORK/out/secrets.env")" = "444" ] || fail "mode after update"
 
 # SIGTERM exits cleanly.
 docker stop secretsfetch-test >/dev/null

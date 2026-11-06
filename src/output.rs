@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::Error;
@@ -55,18 +55,51 @@ pub fn render(
     }
 }
 
-/// Atomically replace `path` with `contents` and the given permission bits.
+/// How existing output files are updated.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum WriteMode {
+    /// Rewrite the existing file (same inode), so containers that bind-mount
+    /// the single file see the update. A reader racing the write can see a
+    /// truncated file for an instant.
+    #[default]
+    InPlace,
+    /// Write a new file and rename it over the old one. Readers never see a
+    /// partial file, but a bind-mount of the single file keeps showing the
+    /// old content; mount the directory instead.
+    Replace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteOptions {
+    /// Permission bits for written files.
+    pub file_mode: u32,
+    pub write_mode: WriteMode,
+}
+
+impl Default for WriteOptions {
+    fn default() -> Self {
+        Self {
+            file_mode: 0o444,
+            write_mode: WriteMode::default(),
+        }
+    }
+}
+
+/// Write `contents` to `path` and set its permission bits.
 ///
-/// The data is written to a private temporary file in the same directory and
-/// renamed into place, so readers only ever see the old or the new file,
-/// never a partially written one. Returns `false` (and touches nothing) when
-/// the file already has exactly this content and mode.
-pub fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> Result<bool, Error> {
+/// New files are always created atomically: the data goes into a private
+/// (`0600`) temporary file that is renamed into place, so a secret is never
+/// readable by others with the wrong permissions and never seen half
+/// written. Existing files are updated according to `opts.write_mode`.
+///
+/// Returns `false` (and touches nothing) when the file already has exactly
+/// this content and mode.
+pub fn write_file(path: &Path, contents: &[u8], opts: WriteOptions) -> Result<bool, Error> {
     let write_err = |source: io::Error| Error::Write {
         path: path.to_owned(),
         source,
     };
-    if is_up_to_date(path, contents, mode) {
+    if is_up_to_date(path, contents, opts.file_mode) {
         return Ok(false);
     }
 
@@ -76,23 +109,78 @@ pub fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> Result<bool, Err
     };
     fs::create_dir_all(&dir).map_err(write_err)?;
 
-    // NamedTempFile is created 0600, so the secret is never readable by
-    // others before the final mode is applied.
+    let exists = match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(e) => return Err(write_err(e)),
+    };
+    match (opts.write_mode, exists) {
+        (WriteMode::InPlace, true) => overwrite_in_place(path, contents, opts.file_mode),
+        _ => replace(path, &dir, contents, opts.file_mode),
+    }
+    .map_err(write_err)?;
+    Ok(true)
+}
+
+fn replace(path: &Path, dir: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
     let mut tmp = tempfile::Builder::new()
         .prefix(".secretsfetch-")
-        .tempfile_in(&dir)
-        .map_err(write_err)?;
-    tmp.write_all(contents).map_err(write_err)?;
+        .tempfile_in(dir)?;
+    tmp.write_all(contents)?;
     tmp.as_file()
-        .set_permissions(fs::Permissions::from_mode(mode))
-        .map_err(write_err)?;
-    tmp.as_file().sync_all().map_err(write_err)?;
-    tmp.persist(path).map_err(|e| write_err(e.error))?;
+        .set_permissions(fs::Permissions::from_mode(mode))?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|e| e.error)?;
     // Make the rename durable.
-    fs::File::open(&dir)
-        .and_then(|d| d.sync_all())
-        .map_err(write_err)?;
-    Ok(true)
+    fs::File::open(dir)?.sync_all()
+}
+
+/// Rewrite an existing regular file, keeping its inode.
+///
+/// The file is usually read-only (`0444`), so the owner-write bit is added
+/// for the duration of the write; the read bits are left alone so readers
+/// are never locked out. Symlinks are refused rather than followed, so a
+/// planted link can't redirect a secret elsewhere.
+fn overwrite_in_place(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
+    let nofollow = |o: &mut fs::OpenOptions| {
+        o.custom_flags(libc::O_NOFOLLOW);
+    };
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    nofollow(&mut opts);
+    let handle = opts.open(path).map_err(|e| {
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            io::Error::other("refusing to write through a symlink")
+        } else {
+            e
+        }
+    })?;
+    let meta = handle.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+
+    let current = meta.permissions().mode() & 0o7777;
+    if current & 0o200 == 0 {
+        handle.set_permissions(fs::Permissions::from_mode(current | 0o200))?;
+    }
+    let written = (|| {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true);
+        nofollow(&mut opts);
+        let mut file = opts.open(path)?;
+        let now = file.metadata()?;
+        if (now.dev(), now.ino()) != (meta.dev(), meta.ino()) {
+            return Err(io::Error::other("file was replaced while being written"));
+        }
+        file.set_len(0)?;
+        file.write_all(contents)?;
+        file.sync_all()
+    })();
+    // Apply the final mode even if the write failed, so the file is never
+    // left owner-writable.
+    let chmod = handle.set_permissions(fs::Permissions::from_mode(mode));
+    written.and(chmod)
 }
 
 fn is_up_to_date(path: &Path, contents: &[u8], mode: u32) -> bool {
@@ -192,50 +280,117 @@ mod tests {
         fs::metadata(p).unwrap().permissions().mode() & 0o7777
     }
 
+    fn inode(p: &Path) -> u64 {
+        fs::metadata(p).unwrap().ino()
+    }
+
+    fn opts(file_mode: u32, write_mode: WriteMode) -> WriteOptions {
+        WriteOptions {
+            file_mode,
+            write_mode,
+        }
+    }
+
+    const BOTH: [WriteMode; 2] = [WriteMode::InPlace, WriteMode::Replace];
+
     #[test]
-    fn write_creates_dirs_and_sets_mode() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("a/b/secret.env");
-        assert!(write_atomic(&path, b"X=1\n", 0o444).unwrap());
-        assert_eq!(fs::read(&path).unwrap(), b"X=1\n");
-        assert_eq!(mode_of(&path), 0o444);
-        // No temp files left behind.
-        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    fn default_is_in_place_read_only() {
+        assert_eq!(WriteOptions::default(), opts(0o444, WriteMode::InPlace));
     }
 
     #[test]
-    fn write_replaces_read_only_file() {
+    fn write_creates_dirs_and_sets_mode() {
+        for wm in BOTH {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("a/b/secret.env");
+            assert!(write_file(&path, b"X=1\n", opts(0o444, wm)).unwrap());
+            assert_eq!(fs::read(&path).unwrap(), b"X=1\n");
+            assert_eq!(mode_of(&path), 0o444);
+            // No temp files left behind.
+            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn write_updates_read_only_file() {
+        for wm in BOTH {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("secret");
+            write_file(&path, b"old content", opts(0o444, wm)).unwrap();
+            assert!(write_file(&path, b"new", opts(0o444, wm)).unwrap());
+            assert_eq!(fs::read(&path).unwrap(), b"new");
+            assert_eq!(mode_of(&path), 0o444);
+            assert!(write_file(&path, b"longer content", opts(0o640, wm)).unwrap());
+            assert_eq!(fs::read(&path).unwrap(), b"longer content");
+            assert_eq!(mode_of(&path), 0o640);
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn in_place_keeps_inode_and_replace_does_not() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secret");
-        write_atomic(&path, b"old", 0o444).unwrap();
-        assert!(write_atomic(&path, b"new", 0o444).unwrap());
-        assert_eq!(fs::read(&path).unwrap(), b"new");
+        write_file(&path, b"one", opts(0o444, WriteMode::InPlace)).unwrap();
+        let first = inode(&path);
+        write_file(&path, b"two", opts(0o444, WriteMode::InPlace)).unwrap();
+        assert_eq!(inode(&path), first);
+
+        // An open handle (like a bind mount) sees the new content.
+        let held = fs::File::open(&path).unwrap();
+        write_file(&path, b"three", opts(0o444, WriteMode::InPlace)).unwrap();
+        assert_eq!(io::read_to_string(&held).unwrap(), "three");
+
+        write_file(&path, b"four", opts(0o444, WriteMode::Replace)).unwrap();
+        assert_ne!(inode(&path), first);
     }
 
     #[test]
     fn write_skips_identical_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("secret");
-        write_atomic(&path, b"same", 0o444).unwrap();
-        let inode = std::os::unix::fs::MetadataExt::ino(&fs::metadata(&path).unwrap());
-        assert!(!write_atomic(&path, b"same", 0o444).unwrap());
-        let after = std::os::unix::fs::MetadataExt::ino(&fs::metadata(&path).unwrap());
-        assert_eq!(inode, after);
-        // A mode change alone is still applied.
-        assert!(write_atomic(&path, b"same", 0o440).unwrap());
-        assert_eq!(mode_of(&path), 0o440);
+        for wm in BOTH {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("secret");
+            write_file(&path, b"same", opts(0o444, wm)).unwrap();
+            let before = fs::metadata(&path).unwrap().modified().unwrap();
+            let ino = inode(&path);
+            assert!(!write_file(&path, b"same", opts(0o444, wm)).unwrap());
+            assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+            assert_eq!(inode(&path), ino);
+            // A mode change alone is still applied.
+            assert!(write_file(&path, b"same", opts(0o440, wm)).unwrap());
+            assert_eq!(mode_of(&path), 0o440);
+        }
     }
 
     #[test]
-    fn write_never_follows_symlink_target_for_up_to_date_check() {
+    fn in_place_refuses_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::write(&target, b"untouched").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = write_file(&link, b"secret", opts(0o444, WriteMode::InPlace)).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert_eq!(fs::read(&target).unwrap(), b"untouched");
+    }
+
+    #[test]
+    fn in_place_refuses_non_regular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("subdir");
+        fs::create_dir(&path).unwrap();
+        assert!(write_file(&path, b"x", opts(0o444, WriteMode::InPlace)).is_err());
+    }
+
+    #[test]
+    fn replace_swaps_out_symlinks_without_touching_target() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("target");
         fs::write(&target, b"data").unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        // The symlink is replaced by a real file; the target is untouched.
-        assert!(write_atomic(&link, b"data", 0o444).unwrap());
+        assert!(write_file(&link, b"secret", opts(0o444, WriteMode::Replace)).unwrap());
         assert!(fs::symlink_metadata(&link).unwrap().is_file());
+        assert_eq!(fs::read(&target).unwrap(), b"data");
     }
 }

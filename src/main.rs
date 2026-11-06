@@ -7,6 +7,7 @@ use std::time::Duration;
 use clap::Parser;
 use serde_json::json;
 
+use secretsfetch::output::{WriteMode, WriteOptions};
 use secretsfetch::{config, log, source, sync::Syncer};
 
 /// Fetch secrets from GCP Secret Manager into env files and secret files,
@@ -34,6 +35,12 @@ struct Args {
     /// Permission bits (octal) for written files.
     #[arg(long, default_value = "444", value_parser = parse_mode)]
     file_mode: u32,
+
+    /// How existing files are updated. `in-place` rewrites the same file so
+    /// single-file bind mounts see changes; `replace` renames a new file over
+    /// it so readers never see a partial write.
+    #[arg(long, value_enum, default_value_t = WriteMode::InPlace)]
+    write_mode: WriteMode,
 
     /// Override the Secret Manager endpoint, e.g. a regional endpoint like
     /// https://secretmanager.us-east1.rep.googleapis.com. An http:// endpoint
@@ -67,7 +74,11 @@ async fn run(args: Args) -> Result<(), String> {
     let client = source::secret_manager(args.endpoint.as_deref())
         .await
         .map_err(|e| format!("failed to create Secret Manager client: {e}"))?;
-    Syncer::new(client, plan, args.file_mode)
+    let write_opts = WriteOptions {
+        file_mode: args.file_mode,
+        write_mode: args.write_mode,
+    };
+    Syncer::new(client, plan, write_opts)
         .run(Duration::from_secs(args.sleep), args.oneshot)
         .await
         .map_err(|e| e.to_string())
@@ -119,6 +130,9 @@ mod tests {
         assert_eq!(a.sleep, 5);
         assert!(a.oneshot);
         assert_eq!(a.file_mode, 0o444);
+        assert_eq!(a.write_mode, WriteMode::InPlace);
+        let a = Args::try_parse_from(["s", "a", "b", "c", "--write-mode", "replace"]).unwrap();
+        assert_eq!(a.write_mode, WriteMode::Replace);
     }
 
     #[test]

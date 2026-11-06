@@ -9,9 +9,10 @@ secret versions are added.
 
 - **Minimal attack surface**: written in Rust and shipped in a `scratch` image
   that holds only the static binary and a CA bundle (~8 MB).
-- **Safe file handling**: files are replaced atomically (readers never see a
-  partial file), start out private (`0600`) while being written, and end up
-  read-only (`0444` by default).
+- **Safe file handling**: new files are created atomically and are private
+  (`0600`) until fully written; all files end up read-only (`0444` by
+  default). Existing files are updated in place, so containers that
+  bind-mount a single file see changes. Symlinks are never written through.
 - **Fail fast on bad config**: the whole YAML file is validated before
   anything is fetched, and every problem is reported at once.
 
@@ -29,6 +30,7 @@ secretsfetch [OPTIONS] <INPUT_FILE> <OUTPUT_FILE> <OUTPUT_DIR>
 | `-s`, `--sleep <N>`   | Seconds between checks for new versions (default `60`)                             |
 | `-o`, `--oneshot`     | Write the files once and exit                                                      |
 | `--file-mode <MODE>`  | Octal permission bits for written files (default `444`)                            |
+| `--write-mode <MODE>` | `in-place` (default) or `replace`; see [Updating files](#updating-files)          |
 | `--endpoint <URL>`    | Secret Manager endpoint override, e.g. a regional endpoint. Also `SECRETSFETCH_ENDPOINT` |
 
 Authentication uses [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials):
@@ -108,10 +110,26 @@ secrets are fetched again and the files are rewritten. Files whose content
 didn't change are left alone. A secret referenced by several entries is
 fetched once.
 
-Files are replaced by renaming a new file over the old one. A container that
-bind-mounts **the directory** sees updates. A container that bind-mounts **a
-single file** (`-v /host/secrets/app.env:/app.env`) keeps seeing the file as
-it was when the container started, so mount the directory to get live updates.
+### Updating files
+
+A file that doesn't exist yet is always created atomically: written to a
+private temporary file, then renamed into place.
+
+How an existing file is updated depends on `--write-mode`:
+
+- **`in-place`** (default): the existing file is rewritten (same inode), the
+  way the Python version did it. Containers that bind-mount a single file
+  (`-v /host/secrets/app.env:/app.env`) see the new content. A process
+  reading at the exact moment of the update can see a truncated file. The
+  file is made owner-writable only for the duration of the write, and must
+  be a regular file owned by the user secretsfetch runs as (or it must run
+  as root); symlinks are refused.
+- **`replace`**: a new file is renamed over the old one, so readers only ever
+  see the complete old or new file. A single-file bind mount keeps showing
+  the old file, though; bind-mount the directory instead.
+
+Note that `docker run --env-file` reads the env file once, when the container
+starts, in either mode.
 
 ## Logging
 
@@ -135,6 +153,36 @@ ci/container_test.sh secretsfetch:test
 against an in-process fake of the Secret Manager REST API. Any `http://`
 `--endpoint` is used without credentials; it exists for those tests and local
 emulators, so an access token is never sent over plain HTTP.
+
+## CI/CD
+
+GitHub Actions workflows live in `.github/workflows/`:
+
+- **`ci.yml`** (pushes and PRs to `main`): `cargo fmt --check`, clippy, `cargo
+  test`, actionlint on the workflows, and a Docker build on native amd64 and
+  arm64 runners followed by `ci/container_test.sh` against each image.
+- **`release.yml`** (on publishing a GitHub release): checks the tag matches
+  the `Cargo.toml` version, builds the image on native amd64/arm64 runners,
+  merges them into one multi-arch image at
+  `ghcr.io/delfinacare/secretsfetch` tagged `X.Y.Z`, `X.Y` and `X`, attaches
+  build provenance attestations and an SBOM, and uploads static
+  `secretsfetch-linux-{amd64,arm64}` binaries to the release.
+
+Dependabot (`.github/dependabot.yml`) updates crates, actions and the base
+image weekly, with the Google Cloud crates grouped into one PR.
+
+### Releasing
+
+1. Bump `version` in `Cargo.toml`, run `cargo check` to update `Cargo.lock`,
+   and merge that to `main`.
+2. Create a GitHub release with tag `vX.Y.Z` matching that version.
+
+Verify a downloaded artifact with:
+
+```bash
+gh attestation verify oci://ghcr.io/delfinacare/secretsfetch:X.Y.Z --owner DelfinaCare
+gh attestation verify secretsfetch-linux-amd64 --owner DelfinaCare
+```
 
 ## License
 
