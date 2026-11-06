@@ -161,27 +161,59 @@ GitHub Actions workflows live in `.github/workflows/`:
 - **`ci.yml`** (pushes and PRs to `main`): `cargo fmt --check`, clippy, `cargo
   test`, actionlint on the workflows, and a Docker build on native amd64 and
   arm64 runners followed by `ci/container_test.sh` against each image.
-- **`release.yml`** (on publishing a GitHub release): checks the tag matches
-  the `Cargo.toml` version, builds the image on native amd64/arm64 runners,
-  merges them into one multi-arch image at
-  `ghcr.io/delfinacare/gcp-fetch-secret` tagged `X.Y.Z`, `X.Y` and `X`, attaches
-  build provenance attestations and an SBOM, and uploads static
-  `gcp-fetch-secret-linux-{amd64,arm64}` binaries to the release.
+- **`release.yml`** (on pushing a `vX.Y.Z` tag): checks the tag matches the
+  `Cargo.toml` version, creates a **draft** GitHub release, builds the image
+  on native amd64/arm64 runners, merges them into one multi-arch image at
+  `ghcr.io/delfinacare/gcp-fetch-secret` tagged `X.Y.Z`, `X.Y` and `X`,
+  attaches build provenance attestations, uploads an SBOM and static
+  `gcp-fetch-secret-linux-{amd64,arm64}` binaries to the draft, and finally
+  publishes the release.
 
 Dependabot (`.github/dependabot.yml`) updates crates, actions and the base
 image weekly, with the Google Cloud crates grouped into one PR.
 
 ### Releasing
 
+Releases are compatible with GitHub's [immutable releases](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases):
+once a release is published, its assets can't be added, changed or removed
+and its tag can't be moved or deleted. The release workflow therefore
+attaches every asset to a draft release and publishes it only as its last
+step.
+
 1. Bump `version` in `Cargo.toml`, run `cargo check` to update `Cargo.lock`,
    and merge that to `main`.
-2. Create a GitHub release with tag `vX.Y.Z` matching that version.
+2. Tag the merge commit and push the tag:
+
+   ```bash
+   git switch main && git pull
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+3. The workflow creates the draft release (with generated notes), uploads the
+   assets and publishes it. Edit the notes on the draft while it runs if
+   needed. **Don't create or publish the release by hand**: a published
+   release can no longer receive assets.
+
+If the workflow fails, the release stays a draft. Fix the cause and re-run the
+failed jobs: the existing draft is reused and assets are overwritten. If the
+fix needs a code change, delete the draft release and the tag, then start over
+from step 1 with the same version. Once a release is published, its version
+can't be reused; cut a new patch release instead.
+
+Note that the container image is pushed to GHCR before the release is
+published, and GHCR tags aren't covered by release immutability; pin images by
+digest where that matters.
 
 Verify a downloaded artifact with:
 
 ```bash
 gh attestation verify oci://ghcr.io/delfinacare/gcp-fetch-secret:X.Y.Z --owner DelfinaCare
 gh attestation verify gcp-fetch-secret-linux-amd64 --owner DelfinaCare
+
+# Immutable releases only: check the release and asset against GitHub's release attestation
+gh release verify vX.Y.Z --repo DelfinaCare/gcp-fetch-secret
+gh release verify-asset vX.Y.Z gcp-fetch-secret-linux-amd64 --repo DelfinaCare/gcp-fetch-secret
 ```
 
 ## License

@@ -1,15 +1,26 @@
 name: Release
 
+# Works with immutable releases: once a release is published its assets and
+# tag can no longer change, so everything is uploaded to a *draft* release
+# first and the release is published as the very last step. Pushing a `vX.Y.Z`
+# tag starts the process; don't create the release by hand.
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
 
 permissions:
   contents: read
 
+# Never run two releases for the same tag at once.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   CARGO_TERM_COLOR: always
+  TAG: ${{ github.ref_name }}
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   check-version:
@@ -18,13 +29,34 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Compare versions
-        env:
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           if [ "${TAG#v}" != "$CARGO_VERSION" ]; then
             echo "::error::Release tag $TAG does not match Cargo.toml version $CARGO_VERSION"
             exit 1
+          fi
+
+  create-draft:
+    name: Create draft release
+    needs: check-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Create or reuse draft release
+        run: |
+          # On a re-run the draft from the earlier attempt is reused. A
+          # published release is immutable, so refuse to touch it.
+          if IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "::error::Release $TAG is already published"
+              exit 1
+            fi
+            echo "Reusing existing draft release $TAG"
+          else
+            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
           fi
 
   # Multi-arch strategy: unlike gcp-log-csp (which builds both arches on one
@@ -34,7 +66,7 @@ jobs:
   # and far longer under emulation.
   build-image:
     name: Build Image (${{ matrix.platform }})
-    needs: check-version
+    needs: create-draft
     strategy:
       matrix:
         include:
@@ -106,10 +138,12 @@ jobs:
     needs: build-image
     runs-on: ubuntu-latest
     permissions:
-      contents: write # upload SBOM to the release
+      contents: write # upload SBOM to the draft release
       packages: write
       attestations: write
       id-token: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Prepare
         run: echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -164,15 +198,20 @@ jobs:
           subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
 
-      - name: Generate and upload SBOM to GitHub Release
+      - name: Generate SBOM
         uses: anchore/sbom-action@v0.24.3
         with:
           image: ${{ env.IMAGE }}@${{ steps.manifest.outputs.digest }}
-          upload-release-assets: true
+          output-file: ${{ runner.temp }}/gcp-fetch-secret.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload SBOM to draft release
+        run: gh release upload "$TAG" "${{ runner.temp }}/gcp-fetch-secret.spdx.json" --clobber
 
   build-binaries:
     name: Build Binary (${{ matrix.asset_name }})
-    needs: check-version
+    needs: create-draft
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -209,7 +248,21 @@ jobs:
         with:
           subject-path: ${{ matrix.asset_name }}
 
-      - name: Upload binary to release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: ${{ matrix.asset_name }}
+      - name: Upload binary to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET: ${{ matrix.asset_name }}
+        run: gh release upload "$TAG" "$ASSET" --clobber
+
+  publish-release:
+    name: Publish release
+    # Only once every asset is attached: after this the release is immutable.
+    needs: [publish-image, build-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Publish draft release
+        run: gh release edit "$TAG" --draft=false
