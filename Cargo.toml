@@ -1,6 +1,6 @@
 [package]
 name = "gcp-fetch-secret"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 description = "Fetches secrets from GCP Secret Manager into env files and secret files, and keeps them up to date"
 license = "MIT"
