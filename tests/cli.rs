@@ -170,7 +170,11 @@ async fn watch_mode_updates_files_and_exits_cleanly_on_sigterm() {
         let env_file = env_file.clone();
         async move {
             for _ in 0..100 {
-                if std::fs::read_to_string(&env_file).is_ok_and(|s| s == expected) {
+                // An in-place rewrite briefly adds the owner-write bit, so
+                // also wait for the final mode before declaring it done.
+                if std::fs::read_to_string(&env_file).is_ok_and(|s| s == expected)
+                    && mode(&env_file) == 0o444
+                {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
