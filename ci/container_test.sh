@@ -21,9 +21,11 @@ cat > "$WORK/secrets.json" <<'JSON'
 JSON
 # Run as an unprivileged user so permission handling is really exercised
 # (root ignores the read-only bit on the files being rewritten).
-mkdir -p "$WORK/out"
+# Pre-create the output dirs (owned by us) so cleanup can delete the files
+# the container user writes into them.
+mkdir -p "$WORK/out/files"
 chmod 755 "$WORK"
-chmod 777 "$WORK/out"
+chmod 777 "$WORK/out" "$WORK/out/files"
 AS_USER=65534:65534
 cat > "$WORK/in.yaml" <<'YAML'
 secrets:
