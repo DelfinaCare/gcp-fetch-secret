@@ -178,7 +178,7 @@ Releases are compatible with GitHub's [immutable releases](https://docs.github.c
 once a release is published, its assets can't be added, changed or removed
 and its tag can't be moved or deleted. The release workflow therefore
 attaches every asset to a draft release and publishes it only as its last
-step. Enable immutability under *Settings → General → Releases*.
+step.
 
 1. Bump `version` in `Cargo.toml`, run `cargo check` to update `Cargo.lock`,
    and merge that to `main`.
