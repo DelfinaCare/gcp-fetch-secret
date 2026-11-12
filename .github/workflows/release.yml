@@ -237,8 +237,14 @@ jobs:
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
+      - name: Install cargo-auditable
+        # Built from the versions locked in tools/Cargo.lock.
+        run: |
+          cargo build --release --locked --manifest-path tools/Cargo.toml -p cargo-auditable --bin cargo-auditable
+          cp tools/target/release/cargo-auditable "${CARGO_HOME:-$HOME/.cargo}/bin/"
+
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo auditable build --release --locked --target ${{ matrix.target }}
 
       - name: Rename binary
         run: cp target/${{ matrix.target }}/release/gcp-fetch-secret ${{ matrix.asset_name }}
