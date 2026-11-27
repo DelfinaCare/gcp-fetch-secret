@@ -199,7 +199,7 @@ jobs:
           push-to-registry: true
 
       - name: Generate SBOM
-        uses: anchore/sbom-action@v0.24.3
+        uses: anchore/sbom-action@v0.24.4
         with:
           image: ${{ env.IMAGE }}@${{ steps.manifest.outputs.digest }}
           output-file: ${{ runner.temp }}/gcp-fetch-secret.spdx.json
